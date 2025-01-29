@@ -217,6 +217,16 @@ func (s *LocalDirV1) handleV1Query(w http.ResponseWriter, r *http.Request) {
 	}
 	defer catalogFile.Close()
 
+	w.Header().Set("Last-Modified", catalogStat.ModTime().UTC().Format(TimeFormat))
+	switch checkIfModifiedSince(r, w, catalogStat.ModTime()) {
+	case condNone:
+		return
+	case condFalse:
+		w.WriteHeader(http.StatusNotModified)
+		return
+	case condTrue:
+	}
+
 	schema := r.URL.Query().Get("schema")
 	pkg := r.URL.Query().Get("package")
 	name := r.URL.Query().Get("name")
@@ -297,4 +307,72 @@ func (s *LocalDirV1) getIndex(catalog string) (*index, error) {
 		return nil, err
 	}
 	return idx.(*index), nil
+}
+
+type condResult int
+
+const (
+	condNone condResult = iota
+	condTrue
+	condFalse
+)
+
+// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+// Source: Originally from Go's net/http/fs.go
+// https://cs.opensource.google/go/go/+/master:src/net/http/fs.go
+func checkIfModifiedSince(r *http.Request, w http.ResponseWriter, modtime time.Time) condResult {
+	ims := r.Header.Get("If-Modified-Since")
+	if ims == "" || isZeroTime(modtime) {
+		return condTrue
+	}
+	t, err := ParseTime(ims)
+	if err != nil {
+		httpError(w, err)
+		return condNone
+	}
+	// The Last-Modified header truncates sub-second precision so
+	// the modtime needs to be truncated too.
+	modtime = modtime.Truncate(time.Second)
+	if modtime.Compare(t) <= 0 {
+		return condFalse
+	}
+	return condTrue
+}
+
+// TimeFormat is the time format to use when generating times in HTTP
+// headers. It is like [time.RFC1123] but hard-codes GMT as the time
+// zone. The time being formatted must be in UTC for Format to
+// generate the correct format.
+//
+// For parsing this time format, see [ParseTime].
+const TimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
+
+var (
+	unixEpochTime = time.Unix(0, 0)
+	timeFormats   = []string{
+		TimeFormat,
+		time.RFC850,
+		time.ANSIC,
+	}
+)
+
+// isZeroTime reports whether t is obviously unspecified (either zero or Unix()=0).
+func isZeroTime(t time.Time) bool {
+	return t.IsZero() || t.Equal(unixEpochTime)
+}
+
+// ParseTime parses a time header (such as the Date: header),
+// trying each of the three formats allowed by HTTP/1.1:
+// [TimeFormat], [time.RFC850], and [time.ANSIC].
+func ParseTime(text string) (t time.Time, err error) {
+	for _, layout := range timeFormats {
+		t, err = time.Parse(layout, text)
+		if err == nil {
+			return
+		}
+	}
+	return
 }
