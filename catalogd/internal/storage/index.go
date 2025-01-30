@@ -9,6 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
+	"github.com/operator-framework/operator-controller/catalogd/internal/seekfaker"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 )
 
@@ -51,7 +52,7 @@ func (i index) Size() int64 {
 	return int64(size)
 }
 
-func (i index) Get(r io.ReaderAt, schema, packageName, name string) (io.Reader, bool) {
+func (i index) Get(r io.ReaderAt, schema, packageName, name string) (io.ReadSeeker, bool) {
 	sectionSet := i.getSectionSet(schema, packageName, name)
 
 	sections := sectionSet.UnsortedList()
@@ -59,12 +60,14 @@ func (i index) Get(r io.ReaderAt, schema, packageName, name string) (io.Reader, 
 		return cmp.Compare(a.offset, b.offset)
 	})
 
+	var size int64
 	srs := make([]io.Reader, 0, len(sections))
 	for _, s := range sections {
 		sr := io.NewSectionReader(r, s.offset, s.length)
 		srs = append(srs, sr)
+		size += s.length
 	}
-	return io.MultiReader(srs...), true
+	return seekfaker.NewSeekFaker(size, srs...), true
 }
 
 func (i *index) getSectionSet(schema, packageName, name string) sets.Set[section] {

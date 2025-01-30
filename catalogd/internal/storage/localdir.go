@@ -217,16 +217,6 @@ func (s *LocalDirV1) handleV1Query(w http.ResponseWriter, r *http.Request) {
 	}
 	defer catalogFile.Close()
 
-	w.Header().Set("Last-Modified", catalogStat.ModTime().UTC().Format(TimeFormat))
-	switch checkIfModifiedSince(r, w, catalogStat.ModTime()) {
-	case condNone:
-		return
-	case condFalse:
-		w.WriteHeader(http.StatusNotModified)
-		return
-	case condTrue:
-	}
-
 	schema := r.URL.Query().Get("schema")
 	pkg := r.URL.Query().Get("package")
 	name := r.URL.Query().Get("name")
@@ -246,7 +236,7 @@ func (s *LocalDirV1) handleV1Query(w http.ResponseWriter, r *http.Request) {
 		httpError(w, fs.ErrNotExist)
 		return
 	}
-	serveJsonLinesQuery(w, indexReader)
+	serveJsonLines(w, r, catalogStat.ModTime(), indexReader)
 }
 
 func (s *LocalDirV1) catalogData(catalog string) (*os.File, os.FileInfo, error) {
@@ -279,15 +269,6 @@ func httpError(w http.ResponseWriter, err error) {
 func serveJsonLines(w http.ResponseWriter, r *http.Request, modTime time.Time, rs io.ReadSeeker) {
 	w.Header().Add("Content-Type", "application/jsonl")
 	http.ServeContent(w, r, "", modTime, rs)
-}
-
-func serveJsonLinesQuery(w http.ResponseWriter, rs io.Reader) {
-	w.Header().Add("Content-Type", "application/jsonl")
-	_, err := io.Copy(w, rs)
-	if err != nil {
-		httpError(w, err)
-		return
-	}
 }
 
 func (s *LocalDirV1) getIndex(catalog string) (*index, error) {

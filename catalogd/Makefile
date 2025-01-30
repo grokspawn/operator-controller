@@ -27,7 +27,8 @@ endif
 KUSTOMIZE_OVERLAY := config/overlays/cert-manager
 
 # bingo manages consistent tooling versions for things like kind, kustomize, etc.
-include ./../.bingo/Variables.mk
+ROOT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
+include ${ROOT_DIR}/../.bingo/Variables.mk
 
 # Dependencies
 export CERT_MGR_VERSION := v1.15.3
