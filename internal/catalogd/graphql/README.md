@@ -92,11 +92,11 @@ curl -X POST http://localhost:8080/my-catalog/api/v1/graphql \
 
 ## Integration
 
-The GraphQL functionality is integrated into the `LocalDirV1` storage handler in `internal/catalogd/storage/localdir.go`:
+The GraphQL functionality is integrated across multiple packages:
 
-- `handleV1GraphQL()`: Handles POST requests to the GraphQL endpoint
-- `createCatalogFS()`: Creates filesystem interface for catalog data
-- `buildCatalogGraphQLSchema()`: Builds dynamic GraphQL schema for specific catalogs
+- `internal/catalogd/server/handlers.go`: `CatalogHandlers.handleV1GraphQL()` handles POST requests to the GraphQL endpoint
+- `internal/catalogd/storage/localdir.go`: `LocalDirV1.GetCatalogFS()` creates filesystem interface for catalog data
+- `internal/catalogd/service/graphql_service.go`: `GraphQLService.GetSchema()` and `buildSchemaFromFS()` build dynamic GraphQL schemas for specific catalogs
 
 ## Technical Details
 

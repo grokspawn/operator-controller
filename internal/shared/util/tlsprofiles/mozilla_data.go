@@ -5,7 +5,7 @@ package tlsprofiles
 // DATA VERSION: 5.8
 
 import (
-	"crypto/tls"
+"crypto/tls"
 )
 
 var modernTLSProfile = tlsProfile{
