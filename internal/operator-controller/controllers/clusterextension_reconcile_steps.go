@@ -180,9 +180,6 @@ func ResolveBundle(r resolve.Resolver, c client.Client) ReconcileStepFunc {
 		// catalog has no deprecation entries; nil on failure means no catalog was selected.
 		// Keep the success check for other resolver implementations that may return nil.
 		hasCatalogData := err == nil || resolvedDeprecation != nil
-		if behavior, ok := r.(resolve.ResolverBehavior); ok {
-			hasCatalogData = behavior.HasCatalogData(ext)
-		}
 		state.resolvedDeprecation = resolvedDeprecation
 		state.hasCatalogData = hasCatalogData
 		SetDeprecationStatus(ext, installedBundleName, resolvedDeprecation, hasCatalogData)
