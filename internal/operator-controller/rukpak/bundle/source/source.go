@@ -1,11 +1,16 @@
 package source
 
 import (
+	"archive/tar"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"path/filepath"
+	"strings"
+	"testing/fstest"
 
 	"helm.sh/helm/v3/pkg/chart"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -40,21 +45,39 @@ const (
 )
 
 // SniffContentType inspects the layout of a pulled artifact filesystem and
-// reports its packaging format. A root Chart.yaml indicates a Helm chart;
-// the registry+v1 layout is otherwise required.
+// reports its packaging format. A root Chart.yaml indicates an extracted
+// Helm chart; a single root *.tgz indicates a standard chart OCI artifact
+// (the layout produced by `helm push`); the registry+v1 layout is otherwise
+// required.
 func SniffContentType(fsys fs.FS) (ContentType, error) {
 	if _, err := fs.Stat(fsys, "Chart.yaml"); err == nil {
 		return ContentHelm, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
+	if isStandardChartArtifact(fsys) {
+		return ContentHelm, nil
+	}
 	if _, err := fs.Stat(fsys, filepath.Join("metadata", "annotations.yaml")); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("unrecognized content: neither a Helm chart (Chart.yaml) nor a registry+v1 bundle (metadata/annotations.yaml)")
+			return "", fmt.Errorf("unrecognized content: neither a Helm chart (Chart.yaml), a standard chart OCI artifact (*.tgz), nor a registry+v1 bundle (metadata/annotations.yaml)")
 		}
 		return "", err
 	}
 	return ContentRegistryV1, nil
+}
+
+// isStandardChartArtifact reports whether the filesystem holds exactly one
+// top-level .tgz entry, the layout of a chart pushed with `helm push`.
+func isStandardChartArtifact(fsys fs.FS) bool {
+	entries, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return false
+	}
+	if len(entries) != 1 || entries[0].IsDir() {
+		return false
+	}
+	return strings.HasSuffix(entries[0].Name(), ".tgz")
 }
 
 // LoadChartMetadata reads the root Chart.yaml of a Helm chart source.
@@ -71,6 +94,60 @@ func LoadChartMetadata(fsys fs.FS) (*chart.Metadata, error) {
 		return nil, fmt.Errorf("Chart.yaml must set both name and version")
 	}
 	return meta, nil
+}
+
+// ReadChartFS returns the effective chart filesystem for either Helm
+// content layout: an extracted chart (root Chart.yaml) is returned as-is;
+// a standard chart OCI artifact (a single root *.tgz, the layout produced
+// by `helm push`) is extracted with its leading chart-name directory
+// stripped so Chart.yaml sits at the root.
+func ReadChartFS(fsys fs.FS) (fs.FS, error) {
+	if _, err := fs.Stat(fsys, "Chart.yaml"); err == nil {
+		return fsys, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	entries, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) != 1 || entries[0].IsDir() || !strings.HasSuffix(entries[0].Name(), ".tgz") {
+		return nil, fmt.Errorf("not a Helm chart: no root Chart.yaml and no single *.tgz archive")
+	}
+	archiveData, err := fs.ReadFile(fsys, entries[0].Name())
+	if err != nil {
+		return nil, err
+	}
+	out := fstest.MapFS{}
+	tr := tar.NewReader(bytes.NewReader(archiveData))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read chart archive: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		// Strip the leading "<chart-name>/" directory.
+		name := strings.TrimPrefix(hdr.Name, "./")
+		if idx := strings.IndexByte(name, '/'); idx >= 0 {
+			name = name[idx+1:]
+		} else {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, fmt.Errorf("read %q from chart archive: %w", hdr.Name, err)
+		}
+		out[name] = &fstest.MapFile{Data: data}
+	}
+	if _, err := fs.Stat(out, "Chart.yaml"); err != nil {
+		return nil, fmt.Errorf("chart archive does not contain a Chart.yaml at its root")
+	}
+	return out, nil
 }
 
 type BundleSource interface {

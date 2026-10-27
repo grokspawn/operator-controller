@@ -1,6 +1,8 @@
 package applier
 
 import (
+	"archive/tar"
+	"bytes"
 	"io/fs"
 	"testing"
 	"testing/fstest"
@@ -203,4 +205,45 @@ data: {}
 	unknown := fstest.MapFS{"README.md": &fstest.MapFile{Data: []byte("hi")}}
 	_, err = source.SniffContentType(unknown)
 	require.ErrorContains(t, err, "unrecognized content")
+}
+
+// chartArchiveFS builds the layout of a standard chart OCI artifact as
+// produced by `helm push`: a single root *.tgz containing the chart under
+// its name directory.
+func chartArchiveFS(t *testing.T) fstest.MapFS {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	files := map[string]string{
+		"kubecon-chart-demo/Chart.yaml":        "apiVersion: v2\nname: kubecon-chart-demo\nversion: 0.3.0\n",
+		"kubecon-chart-demo/values.yaml":       "replicaCount: 1\n",
+		"kubecon-chart-demo/templates/cm.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo-cm\ndata:\n  replicas: \"{{ .Values.replicaCount }}\"\n",
+	}
+	for name, content := range files {
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}))
+		_, err := tw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tw.Close())
+	return fstest.MapFS{
+		"kubecon-chart-demo-0.3.0.tgz": &fstest.MapFile{Data: buf.Bytes()},
+	}
+}
+
+func TestHelmManifestProviderLoadsStandardChartArtifact(t *testing.T) {
+	chartFS := chartArchiveFS(t)
+	ext := helmTestExtension()
+	ext.Spec.Config = inlineConfig(`{"replicaCount": 4}`)
+
+	objs, err := (&HelmManifestProvider{}).Get(chartFS, ext)
+	require.NoError(t, err)
+	require.Len(t, objs, 1)
+	require.Equal(t, "demo-cm", objs[0].GetName())
+	require.Equal(t, "4", objs[0].(*unstructured.Unstructured).Object["data"].(map[string]interface{})["replicas"])
+}
+
+func TestSniffContentTypeStandardArtifact(t *testing.T) {
+	contentType, err := source.SniffContentType(chartArchiveFS(t))
+	require.NoError(t, err)
+	require.Equal(t, source.ContentHelm, contentType)
 }

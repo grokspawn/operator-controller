@@ -101,17 +101,22 @@ func (h *HelmManifestProvider) valuesFor(ext *ocv1.ClusterExtension) (map[string
 }
 
 // loadChartFromFS adapts an fs.FS (a pulled OCI artifact) into Helm's
-// chart loader.
+// chart loader, handling both the extracted-chart and standard tgz
+// artifact layouts.
 func loadChartFromFS(chartFS fs.FS) (*chart.Chart, error) {
+	effectiveFS, err := source.ReadChartFS(chartFS)
+	if err != nil {
+		return nil, err
+	}
 	var files []*loader.BufferedFile
-	err := fs.WalkDir(chartFS, ".", func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(effectiveFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		data, err := fs.ReadFile(chartFS, path)
+		data, err := fs.ReadFile(effectiveFS, path)
 		if err != nil {
 			return err
 		}

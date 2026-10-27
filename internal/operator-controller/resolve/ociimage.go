@@ -59,7 +59,11 @@ func bundleFromFS(bundleFS fs.FS, image string) (*declcfg.Bundle, error) {
 		return nil, reconcile.TerminalError(err)
 	}
 	if contentType == bundlesource.ContentHelm {
-		return helmBundleFromFS(bundleFS, image)
+		chartFS, err := bundlesource.ReadChartFS(bundleFS)
+		if err != nil {
+			return nil, reconcile.TerminalError(err)
+		}
+		return helmBundleFromFS(chartFS, image)
 	}
 	registryBundle, err := bundlesource.FromFS(bundleFS).GetBundle()
 	if err != nil {
