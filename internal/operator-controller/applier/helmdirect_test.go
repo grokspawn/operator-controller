@@ -247,3 +247,21 @@ func TestSniffContentTypeStandardArtifact(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, source.ContentHelm, contentType)
 }
+
+func TestSniffContentTypeUnpackedArtifact(t *testing.T) {
+	// The image cache unpacks a chart artifact's tar+gzip layer, leaving
+	// the chart under its name directory.
+	unpacked := fstest.MapFS{
+		"kubecon-chart-demo/Chart.yaml":  &fstest.MapFile{Data: []byte("apiVersion: v2\nname: kubecon-chart-demo\nversion: 0.3.0\n")},
+		"kubecon-chart-demo/values.yaml": &fstest.MapFile{Data: []byte("replicaCount: 1\n")},
+	}
+	contentType, err := source.SniffContentType(unpacked)
+	require.NoError(t, err)
+	require.Equal(t, source.ContentHelm, contentType)
+
+	effective, err := source.ReadChartFS(unpacked)
+	require.NoError(t, err)
+	data, err := fs.ReadFile(effective, "Chart.yaml")
+	require.NoError(t, err)
+	require.Contains(t, string(data), "kubecon-chart-demo")
+}

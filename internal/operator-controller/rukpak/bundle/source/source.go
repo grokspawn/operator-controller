@@ -45,10 +45,12 @@ const (
 )
 
 // SniffContentType inspects the layout of a pulled artifact filesystem and
-// reports its packaging format. A root Chart.yaml indicates an extracted
-// Helm chart; a single root *.tgz indicates a standard chart OCI artifact
-// (the layout produced by `helm push`); the registry+v1 layout is otherwise
-// required.
+// reports its packaging format. Helm content is recognized in three
+// shapes: a root Chart.yaml (extracted chart), a single root *.tgz (the
+// layer of a standard chart OCI artifact, before unpacking), and a single
+// root directory containing Chart.yaml (the same artifact after its
+// tar+gzip layer has been unpacked by the image cache). The registry+v1
+// layout is otherwise required.
 func SniffContentType(fsys fs.FS) (ContentType, error) {
 	if _, err := fs.Stat(fsys, "Chart.yaml"); err == nil {
 		return ContentHelm, nil
@@ -58,9 +60,12 @@ func SniffContentType(fsys fs.FS) (ContentType, error) {
 	if isStandardChartArtifact(fsys) {
 		return ContentHelm, nil
 	}
+	if isUnpackedChartArtifact(fsys) {
+		return ContentHelm, nil
+	}
 	if _, err := fs.Stat(fsys, filepath.Join("metadata", "annotations.yaml")); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("unrecognized content: neither a Helm chart (Chart.yaml), a standard chart OCI artifact (*.tgz), nor a registry+v1 bundle (metadata/annotations.yaml)")
+			return "", fmt.Errorf("unrecognized content: neither a Helm chart (Chart.yaml), a chart OCI artifact (*.tgz or its unpacked chart directory), nor a registry+v1 bundle (metadata/annotations.yaml)")
 		}
 		return "", err
 	}
@@ -68,7 +73,7 @@ func SniffContentType(fsys fs.FS) (ContentType, error) {
 }
 
 // isStandardChartArtifact reports whether the filesystem holds exactly one
-// top-level .tgz entry, the layout of a chart pushed with `helm push`.
+// top-level .tgz entry, the chart layer of a `helm push` artifact.
 func isStandardChartArtifact(fsys fs.FS) bool {
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
@@ -78,6 +83,21 @@ func isStandardChartArtifact(fsys fs.FS) bool {
 		return false
 	}
 	return strings.HasSuffix(entries[0].Name(), ".tgz")
+}
+
+// isUnpackedChartArtifact reports whether the filesystem holds a single
+// top-level directory containing a Chart.yaml: the shape a chart
+// OCI artifact's tar+gzip layer leaves after the image cache unpacks it.
+func isUnpackedChartArtifact(fsys fs.FS) bool {
+	entries, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return false
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		return false
+	}
+	_, err = fs.Stat(fsys, filepath.Join(entries[0].Name(), "Chart.yaml"))
+	return err == nil
 }
 
 // LoadChartMetadata reads the root Chart.yaml of a Helm chart source.
@@ -110,6 +130,12 @@ func ReadChartFS(fsys fs.FS) (fs.FS, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		return nil, err
+	}
+	if len(entries) == 1 && entries[0].IsDir() {
+		if _, err := fs.Stat(fsys, filepath.Join(entries[0].Name(), "Chart.yaml")); err == nil {
+			return fs.Sub(fsys, entries[0].Name())
+		}
+		return nil, fmt.Errorf("not a Helm chart: single root directory has no Chart.yaml")
 	}
 	if len(entries) != 1 || entries[0].IsDir() || !strings.HasSuffix(entries[0].Name(), ".tgz") {
 		return nil, fmt.Errorf("not a Helm chart: no root Chart.yaml and no single *.tgz archive")
