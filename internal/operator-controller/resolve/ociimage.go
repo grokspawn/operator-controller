@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
+	"github.com/operator-framework/operator-registry/alpha/property"
 
 	ocv1 "github.com/operator-framework/operator-controller/api/v1"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/bundleutil"
@@ -53,6 +54,13 @@ func (r *OCIImageResolver) Resolve(ctx context.Context, ext *ocv1.ClusterExtensi
 }
 
 func bundleFromFS(bundleFS fs.FS, image string) (*declcfg.Bundle, error) {
+	contentType, err := bundlesource.SniffContentType(bundleFS)
+	if err != nil {
+		return nil, reconcile.TerminalError(err)
+	}
+	if contentType == bundlesource.ContentHelm {
+		return helmBundleFromFS(bundleFS, image)
+	}
 	registryBundle, err := bundlesource.FromFS(bundleFS).GetBundle()
 	if err != nil {
 		return nil, err
@@ -68,4 +76,39 @@ func bundleFromFS(bundleFS fs.FS, image string) (*declcfg.Bundle, error) {
 		return nil, fmt.Errorf("failed to parse bundle properties: %w", err)
 	}
 	return bundle, nil
+}
+
+// helmBundleFromFS derives installation metadata for a Helm chart source.
+// The chart's own identity (name, version) supplies the bundle name and
+// package; there is no CSV and no catalog lifecycle. Direct sources
+// intentionally perform no dependency resolution.
+func helmBundleFromFS(bundleFS fs.FS, image string) (*declcfg.Bundle, error) {
+	chartMeta, err := bundlesource.LoadChartMetadata(bundleFS)
+	if err != nil {
+		return nil, err
+	}
+	bundle := &declcfg.Bundle{
+		Name:    fmt.Sprintf("%s.v%s", chartMeta.Name, chartMeta.Version),
+		Package: chartMeta.Name,
+		Image:   image,
+		Properties: []property.Property{
+			{
+				Type: "olm.package",
+				Value: json.RawMessage(mustMarshalJSON(map[string]string{
+					"packageName": chartMeta.Name,
+					"version":     chartMeta.Version,
+				})),
+			},
+		},
+	}
+	return bundle, nil
+}
+
+func mustMarshalJSON(v interface{}) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		// map[string]string marshalling cannot fail.
+		panic(err)
+	}
+	return data
 }

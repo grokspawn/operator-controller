@@ -622,10 +622,17 @@ func (c *boxcutterReconcilerConfigurator) Configure(ceReconciler *controllers.Cl
 
 	// TODO: better scheme handling - which types do we want to support?
 	_ = apiextensionsv1.AddToScheme(c.mgr.GetScheme())
+	// Direct sources are content-sniffed: registry+v1 bundles render through
+	// the existing provider; standard Helm charts (helm+v2 direction) render
+	// through the restricted deterministic Helm provider. Both content types
+	// then flow through the same ClusterObjectSet lifecycle.
 	rg := &applier.SimpleRevisionGenerator{
-		Scheme:           c.mgr.GetScheme(),
-		ManifestProvider: c.regv1ManifestProvider,
-		SystemNamespace:  cfg.systemNamespace,
+		Scheme: c.mgr.GetScheme(),
+		ManifestProvider: applier.NewDispatchingManifestProvider(
+			c.regv1ManifestProvider,
+			&applier.HelmManifestProvider{},
+		),
+		SystemNamespace: cfg.systemNamespace,
 	}
 	fieldOwner := fmt.Sprintf("%s/clusterextension-controller", fieldOwnerPrefix)
 	appl := &applier.Boxcutter{

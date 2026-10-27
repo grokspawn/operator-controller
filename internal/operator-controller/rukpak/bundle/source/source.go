@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path/filepath"
 
+	"helm.sh/helm/v3/pkg/chart"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,6 +24,54 @@ import (
 const (
 	PropertyOLMProperties = "olm.properties"
 )
+
+// ContentType identifies the packaging format of a pulled direct-source
+// artifact. Direct sources are content-sniffed: the same sourceType can
+// carry different packaging formats.
+type ContentType string
+
+const (
+	// ContentRegistryV1 is a registry+v1 operator bundle
+	// (manifests/ + metadata/annotations.yaml layout).
+	ContentRegistryV1 ContentType = "registry+v1"
+	// ContentHelm is a standard Helm chart (Chart.yaml at the root),
+	// e.g. an artifact pushed with `helm push` to an OCI registry.
+	ContentHelm ContentType = "helm"
+)
+
+// SniffContentType inspects the layout of a pulled artifact filesystem and
+// reports its packaging format. A root Chart.yaml indicates a Helm chart;
+// the registry+v1 layout is otherwise required.
+func SniffContentType(fsys fs.FS) (ContentType, error) {
+	if _, err := fs.Stat(fsys, "Chart.yaml"); err == nil {
+		return ContentHelm, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if _, err := fs.Stat(fsys, filepath.Join("metadata", "annotations.yaml")); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("unrecognized content: neither a Helm chart (Chart.yaml) nor a registry+v1 bundle (metadata/annotations.yaml)")
+		}
+		return "", err
+	}
+	return ContentRegistryV1, nil
+}
+
+// LoadChartMetadata reads the root Chart.yaml of a Helm chart source.
+func LoadChartMetadata(fsys fs.FS) (*chart.Metadata, error) {
+	data, err := fs.ReadFile(fsys, "Chart.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("read Chart.yaml: %w", err)
+	}
+	meta := &chart.Metadata{}
+	if err := yaml.Unmarshal(data, meta); err != nil {
+		return nil, fmt.Errorf("parse Chart.yaml: %w", err)
+	}
+	if meta.Name == "" || meta.Version == "" {
+		return nil, fmt.Errorf("Chart.yaml must set both name and version")
+	}
+	return meta, nil
+}
 
 type BundleSource interface {
 	GetBundle() (bundle.RegistryV1, error)

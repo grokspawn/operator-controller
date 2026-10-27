@@ -205,6 +205,15 @@ func getBundleAnnotations(bundleFS fs.FS) (map[string]string, error) {
 	// extraction should move behind a bundle-format interface — each format providing the subset
 	// or translation of annotations that makes sense for the COD (conceptually a
 	// getCODAnnotationsFromBundle) — rather than assuming registry+v1 here.
+	// Content sniffing routes Helm charts (no CSV annotations) away from the
+	// registry+v1 parsing below.
+	contentType, err := source.SniffContentType(bundleFS)
+	if err != nil {
+		return nil, err
+	}
+	if contentType == source.ContentHelm {
+		return map[string]string{}, nil
+	}
 	rv1, err := source.FromFS(bundleFS).GetBundle()
 	if err != nil {
 		return nil, err
