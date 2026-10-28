@@ -17,6 +17,7 @@ import (
 
 	ocv1 "github.com/operator-framework/operator-controller/api/v1"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/rukpak/bundle/source"
+	registrybundle "github.com/operator-framework/operator-registry/pkg/lib/bundle"
 )
 
 // bannedTemplateFunctions are Helm template functions whose output changes
@@ -80,7 +81,34 @@ func (h *HelmManifestProvider) Get(chartFS fs.FS, ext *ocv1.ClusterExtension) ([
 		return nil, err
 	}
 
-	return decodeRenderedManifests(rendered)
+	objs, err := decodeRenderedManifests(rendered)
+	if err != nil {
+		return nil, err
+	}
+
+	return stampNamespaces(objs, ext), nil
+}
+
+// stampNamespaces sets the install namespace on namespace-scoped rendered
+// objects, mirroring the registry+v1 render path. Kinds in the shared
+// supported-resources table use its scope; unknown kinds (typically
+// custom resources owned by charts) are treated as namespaced, which is
+// the convention for chart-rendered content.
+func stampNamespaces(objs []client.Object, ext *ocv1.ClusterExtension) []client.Object {
+	for _, obj := range objs {
+		if obj.GetNamespace() != "" {
+			continue
+		}
+		namespaced := true
+		if _, known := registrybundle.IsSupported(obj.GetObjectKind().GroupVersionKind().Kind); known {
+			_, isNamespaced := registrybundle.IsSupported(obj.GetObjectKind().GroupVersionKind().Kind)
+			namespaced = bool(isNamespaced)
+		}
+		if namespaced {
+			obj.SetNamespace(ext.Spec.Namespace)
+		}
+	}
+	return objs
 }
 
 // valuesFor extracts user-supplied values from the ClusterExtension's
