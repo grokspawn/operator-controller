@@ -64,8 +64,8 @@ type reconcileState struct {
 	revisionStates           *RevisionStates
 	resolvedRevisionMetadata *RevisionMetadata
 	imageFS                  fs.FS
-	resolvedDeprecation      *declcfg.Deprecation
-	hasCatalogData           bool
+	bundleSource             BundleSource
+	bundleResolution         BundleResolution
 }
 
 // ReconcileStepFunc represents a single step in the ClusterExtension reconciliation process.
@@ -103,6 +103,7 @@ func (steps *ReconcileSteps) Reconcile(ctx context.Context, ext *ocv1.ClusterExt
 type ClusterExtensionReconciler struct {
 	client.Client
 	ReconcileSteps ReconcileSteps
+	BundleSources  BundleSources
 }
 
 type StorageMigrator interface {
@@ -457,24 +458,23 @@ func (r *ClusterExtensionReconciler) newControllerBuilder(mgr ctrl.Manager) *ctr
 		For(&ocv1.ClusterExtension{}).
 		Named("controller-operator-cluster-extension-controller").
 		Watches(&ocv1.ClusterCatalog{},
-			crhandler.EnqueueRequestsFromMapFunc(clusterExtensionRequestsForCatalog(mgr.GetClient(), mgr.GetLogger())),
-			builder.WithPredicates(predicate.Funcs{
-				UpdateFunc: func(ue event.UpdateEvent) bool {
-					oldObject, isOldCatalog := ue.ObjectOld.(*ocv1.ClusterCatalog)
-					newObject, isNewCatalog := ue.ObjectNew.(*ocv1.ClusterCatalog)
+			crhandler.EnqueueRequestsFromMapFunc(clusterExtensionRequestsForCatalog(mgr.GetClient(), mgr.GetLogger(), r.BundleSources)),
+			builder.WithPredicates(predicate.Funcs{UpdateFunc: catalogResolutionInputsChanged}))
+}
 
-					if !isOldCatalog || !isNewCatalog {
-						return true
-					}
-
-					if oldObject.Status.ResolvedSource != nil && newObject.Status.ResolvedSource != nil {
-						if oldObject.Status.ResolvedSource.Image != nil && newObject.Status.ResolvedSource.Image != nil {
-							return oldObject.Status.ResolvedSource.Image.Ref != newObject.Status.ResolvedSource.Image.Ref
-						}
-					}
-					return true
-				},
-			}))
+// Preserve the existing catalog resolved-image update predicate.
+func catalogResolutionInputsChanged(ue event.UpdateEvent) bool {
+	oldCatalog, oldOK := ue.ObjectOld.(*ocv1.ClusterCatalog)
+	newCatalog, newOK := ue.ObjectNew.(*ocv1.ClusterCatalog)
+	if !oldOK || !newOK {
+		return true
+	}
+	if oldCatalog.Status.ResolvedSource != nil && newCatalog.Status.ResolvedSource != nil {
+		if oldCatalog.Status.ResolvedSource.Image != nil && newCatalog.Status.ResolvedSource.Image != nil {
+			return oldCatalog.Status.ResolvedSource.Image.Ref != newCatalog.Status.ResolvedSource.Image.Ref
+		}
+	}
+	return true
 }
 
 func wrapErrorWithResolutionInfo(resolved ocv1.BundleMetadata, err error) error {
@@ -495,11 +495,13 @@ func wrapErrorWithResolutionInfo(resolved ocv1.BundleMetadata, err error) error 
 }
 
 // Generate reconcile requests for all cluster extensions affected by a catalog change
-func clusterExtensionRequestsForCatalog(c client.Reader, logger logr.Logger) crhandler.MapFunc {
-	return func(ctx context.Context, _ client.Object) []reconcile.Request {
-		// no way of associating an extension to a catalog so create reconcile requests for everything
-		clusterExtensions := metav1.PartialObjectMetadataList{}
-		clusterExtensions.SetGroupVersionKind(ocv1.GroupVersion.WithKind("ClusterExtensionList"))
+func clusterExtensionRequestsForCatalog(c client.Reader, logger logr.Logger, sources BundleSources) crhandler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		catalog, ok := obj.(*ocv1.ClusterCatalog)
+		if !ok {
+			return nil
+		}
+		clusterExtensions := ocv1.ClusterExtensionList{}
 		err := c.List(ctx, &clusterExtensions)
 		if err != nil {
 			logger.Error(err, "unable to enqueue cluster extensions for catalog reconcile")
@@ -507,6 +509,10 @@ func clusterExtensionRequestsForCatalog(c client.Reader, logger logr.Logger) crh
 		}
 		var requests []reconcile.Request
 		for _, ext := range clusterExtensions.Items {
+			source, err := sources.For(&ext)
+			if err != nil || !source.ReconcileOnCatalogChange(&ext, catalog) {
+				continue
+			}
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: ext.GetNamespace(),

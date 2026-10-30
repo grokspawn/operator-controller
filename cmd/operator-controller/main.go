@@ -109,7 +109,7 @@ type boxcutterReconcilerConfigurator struct {
 	mgr                   manager.Manager
 	preflights            []applier.Preflight
 	regv1ManifestProvider applier.ManifestProvider
-	resolver              resolve.Resolver
+	bundleSources         controllers.BundleSources
 	imageCache            imageutil.Cache
 	imagePuller           imageutil.Puller
 	finalizers            crfinalizer.Finalizers
@@ -119,7 +119,7 @@ type helmReconcilerConfigurator struct {
 	mgr                   manager.Manager
 	preflights            []applier.Preflight
 	regv1ManifestProvider applier.ManifestProvider
-	resolver              resolve.Resolver
+	bundleSources         controllers.BundleSources
 	imageCache            imageutil.Cache
 	imagePuller           imageutil.Puller
 	finalizers            crfinalizer.Finalizers
@@ -471,8 +471,12 @@ func run() error {
 		}
 	}
 
+	bundleSources := controllers.BundleSources{
+		ocv1.SourceTypeCatalog: &controllers.CatalogBundleSource{Resolver: resolver, Client: cl},
+	}
 	ceReconciler := &controllers.ClusterExtensionReconciler{
-		Client: cl,
+		Client:        cl,
+		BundleSources: bundleSources,
 	}
 	if features.OperatorControllerFeatureGate.Enabled(features.BoxcutterRuntime) {
 		_, err = ceReconciler.SetupWithManagerForBoxcutter(mgr)
@@ -499,7 +503,7 @@ func run() error {
 			mgr:                   mgr,
 			preflights:            preflights,
 			regv1ManifestProvider: regv1ManifestProvider,
-			resolver:              resolver,
+			bundleSources:         bundleSources,
 			imageCache:            imageCache,
 			imagePuller:           imagePuller,
 			finalizers:            clusterExtensionFinalizers,
@@ -509,7 +513,7 @@ func run() error {
 			mgr:                   mgr,
 			preflights:            preflights,
 			regv1ManifestProvider: regv1ManifestProvider,
-			resolver:              resolver,
+			bundleSources:         bundleSources,
 			imageCache:            imageCache,
 			imagePuller:           imagePuller,
 			finalizers:            clusterExtensionFinalizers,
@@ -635,6 +639,7 @@ func (c *boxcutterReconcilerConfigurator) Configure(ceReconciler *controllers.Cl
 		RevisionGenerator:  rg,
 		FieldOwner:         fieldOwner,
 	}
+	ceReconciler.BundleSources = c.bundleSources
 	ceReconciler.ReconcileSteps = []controllers.ReconcileStepFunc{
 		controllers.HandleFinalizers(c.finalizers),
 		controllers.ValidateClusterExtension(
@@ -642,7 +647,7 @@ func (c *boxcutterReconcilerConfigurator) Configure(ceReconciler *controllers.Cl
 		),
 		controllers.MigrateStorage(storageMigrator),
 		controllers.RetrieveRevisionStates(revisionStatesGetter),
-		controllers.ResolveBundle(c.resolver, c.mgr.GetClient()),
+		controllers.ResolveBundle(c.bundleSources),
 		controllers.UnpackBundle(c.imagePuller, c.imageCache),
 		controllers.ValidateInstallNamespace(coreClient),
 		controllers.ApplyBundleWithBoxcutter(appl.Apply),
@@ -693,13 +698,14 @@ func (c *helmReconcilerConfigurator) Configure(ceReconciler *controllers.Cluster
 		TrackingCache:                 c.trackingCache,
 	}
 	revisionStatesGetter := &controllers.HelmRevisionStatesGetter{ActionClientGetter: acg}
+	ceReconciler.BundleSources = c.bundleSources
 	ceReconciler.ReconcileSteps = []controllers.ReconcileStepFunc{
 		controllers.HandleFinalizers(c.finalizers),
 		controllers.ValidateClusterExtension(
 			controllers.ServiceAccountDeprecationWarning(),
 		),
 		controllers.RetrieveRevisionStates(revisionStatesGetter),
-		controllers.ResolveBundle(c.resolver, c.mgr.GetClient()),
+		controllers.ResolveBundle(c.bundleSources),
 		controllers.UnpackBundle(c.imagePuller, c.imageCache),
 		controllers.ApplyBundle(appl),
 	}
